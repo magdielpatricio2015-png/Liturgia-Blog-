@@ -1,22 +1,20 @@
 """
-Calendario Liturgico Luterano
-=============================
+Calendario Liturgico Luterano - VERSÃO MELHORADA
+=================================================
 
-Consulta a pagina "Tempo da Igreja" da IELB e relaciona a data liturgica
-selecionada com comentarios do blog Teologia e Liturgia Luterana.
-
-Melhorias desta versao:
-- Layout mais limpo e focado na data liturgica.
-- Classificacao do tempo liturgico.
-- Busca do blog priorizando o mesmo tempo liturgico e o mesmo domingo/festa.
-- Comentario do blog exibido abaixo das pericopes, no fluxo principal.
-- Sem dependencia obrigatoria de feedparser ou BeautifulSoup.
+Principais melhorias:
+- Busca de blog conectada à data litúrgica (Domingo X, Temporada específica)
+- Parser mais robusto da página IELB
+- Sistema de prioridades na busca (Título > Domingo > Temporada)
+- Enriquecimento de metadados para contexto melhor
+- Logs de debug para diagnóstico
 """
 
 from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 import unicodedata
 import urllib.error
@@ -31,34 +29,33 @@ import streamlit as st
 
 try:
     import requests
-
     REQUESTS_OK = True
 except Exception:
     requests = None
     REQUESTS_OK = False
 
+# ============================================================================
+# CONFIGURAÇÃO DE LOGGING
+# ============================================================================
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# CONSTANTES
+# ============================================================================
 
 BLOG_ARCHIVE_2023 = "https://teologiaeliturgialuterana.blogspot.com/2023/"
 BLOG_FEED = "https://teologiaeliturgialuterana.blogspot.com/feeds/posts/default?alt=rss&max-results=150"
 IELB_TEMPO_IGREJA = "https://www.ielb.org.br/tempo-da-igreja"
 
 DATA_PATH = Path(__file__).parent / "pericopes.json"
-HEADERS = {"User-Agent": "CalendarioLiturgicoLuterano/1.1"}
+HEADERS = {"User-Agent": "CalendarioLiturgicoLuterano/1.2"}
 
 MESES = {
-    "janeiro": 1,
-    "fevereiro": 2,
-    "marco": 3,
-    "março": 3,
-    "abril": 4,
-    "maio": 5,
-    "junho": 6,
-    "julho": 7,
-    "agosto": 8,
-    "setembro": 9,
-    "outubro": 10,
-    "novembro": 11,
-    "dezembro": 12,
+    "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4,
+    "maio": 5, "junho": 6, "julho": 7, "agosto": 8, "setembro": 9,
+    "outubro": 10, "novembro": 11, "dezembro": 12,
 }
 
 TEMPOS_LITURGICOS = [
@@ -118,6 +115,9 @@ FALLBACK_DATAS = {
     },
 }
 
+# ============================================================================
+# DATACLASSES
+# ============================================================================
 
 @dataclass
 class BlogPost:
@@ -126,6 +126,9 @@ class BlogPost:
     summary: str = ""
     published: str = ""
 
+# ============================================================================
+# CONFIGURAÇÃO STREAMLIT
+# ============================================================================
 
 st.set_page_config(
     page_title="Calendario Liturgico Luterano",
@@ -134,6 +137,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ============================================================================
+# FUNÇÕES DE UTILIDADE
+# ============================================================================
 
 def apply_style() -> None:
     st.markdown(
@@ -193,6 +199,15 @@ def apply_style() -> None:
             margin: .08rem .12rem .08rem 0;
         }
         .source-line { color: #69736c; font-size: .88rem; }
+        .debug-box {
+            background: #f0f0f0;
+            border: 1px solid #ddd;
+            padding: 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: #666;
+            margin-top: 1rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -200,17 +215,20 @@ def apply_style() -> None:
 
 
 def strip_accents(text: str) -> str:
+    """Remove acentuação de texto."""
     text = unicodedata.normalize("NFD", text or "")
     return "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
 
 
 def norm(text: str) -> str:
+    """Normaliza texto para comparação."""
     text = strip_accents(html.unescape(str(text or ""))).lower()
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
 def clean_text(raw: str) -> str:
+    """Remove HTML e normaliza espaçamento."""
     raw = html.unescape(raw or "")
     raw = re.sub(r"<script.*?</script>", " ", raw, flags=re.I | re.S)
     raw = re.sub(r"<style.*?</style>", " ", raw, flags=re.I | re.S)
@@ -224,24 +242,27 @@ def clean_text(raw: str) -> str:
 
 
 def fetch_text(url: str) -> str:
+    """Busca conteúdo de URL."""
     if REQUESTS_OK and requests is not None:
         try:
             resp = requests.get(url, headers=HEADERS, timeout=20)
             resp.raise_for_status()
             resp.encoding = resp.encoding or "utf-8"
             return resp.text
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Erro ao buscar {url} com requests: {e}")
 
     req = urllib.request.Request(url, headers=HEADERS)
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             return resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, TimeoutError):
+    except (urllib.error.URLError, TimeoutError) as e:
+        logger.error(f"Erro ao buscar {url}: {e}")
         return ""
 
 
 def parse_pt_date(text: str) -> Optional[date]:
+    """Parse de datas em português."""
     text = html.unescape(text or "").strip()
     match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", text)
     if match:
@@ -256,6 +277,7 @@ def parse_pt_date(text: str) -> Optional[date]:
 
 
 def liturgical_season(title: str) -> str:
+    """Identifica temporada litúrgica pelo título."""
     title_norm = norm(title)
     for season, needles in TEMPOS_LITURGICOS:
         if any(norm(needle) in title_norm for needle in needles):
@@ -264,6 +286,7 @@ def liturgical_season(title: str) -> str:
 
 
 def infer_color(title: str) -> str:
+    """Infere cor litúrgica pelo título."""
     title_norm = norm(title)
     if "sexta-feira santa" in title_norm or "paixao" in title_norm:
         return "Preto"
@@ -272,6 +295,7 @@ def infer_color(title: str) -> str:
 
 
 def looks_like_reading(line: str) -> bool:
+    """Detecta se uma linha é uma leitura bíblica."""
     line = line.strip()
     if not line or len(line) > 90:
         return False
@@ -286,18 +310,104 @@ def looks_like_reading(line: str) -> bool:
     ]
     return any(line.startswith(book + " ") for book in books)
 
+# ============================================================================
+# FUNÇÕES DE EXTRAÇÃO DE METADADOS
+# ============================================================================
+
+def extract_sunday_info(title: str) -> dict[str, str]:
+    """
+    Extrai número do domingo e temporada de um título litúrgico.
+    
+    Exemplos:
+    - "1º Domingo após Pentecostes" -> {"sunday_num": "1", "season_ref": "pentecostes"}
+    - "Domingo de Pentecostes" -> {"sunday_num": "", "season_ref": "pentecostes"}
+    """
+    title_lower = norm(title)
+    
+    # Padrão: "1º domingo após pentecostes", "2º domingo de epifania", etc.
+    patterns = [
+        r"(\d+)[º°ªª]\s*domingo\s+(?:após|de|em)\s+([a-záéíóúàâôãç\s]+?)(?:\s*[-–]|\s*$|\s*domingo)",
+        r"domingo\s+(\d+)[º°ªª]?\s+(?:de|após|em)\s+([a-záéíóúàâôãç\s]+)",
+        r"(\d+)[º°ªª]\s*domingo\s+de\s+([a-záéíóúàâôãç\s]+)",
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, title_lower, re.IGNORECASE)
+        if match:
+            groups = match.groups()
+            sunday_num = groups[0] if groups[0] and groups[0].isdigit() else ""
+            season_ref = norm(groups[-1]) if groups else ""
+            return {
+                "sunday_num": sunday_num,
+                "season_ref": season_ref.strip(),
+            }
+    
+    # Padrão: "Domingo de Pentecostes", "Quarta-feira de Cinzas", etc.
+    simple_patterns = [
+        r"(?:domingo|quarta|sexta)\s+(?:de|do|da)\s+([a-záéíóúàâôãç\s]+)",
+        r"([a-záéíóúàâôãç\s]+?)\s+[-–]\s+(?:domingo|quarta|sexta)",
+    ]
+    
+    for pattern in simple_patterns:
+        match = re.search(pattern, title_lower, re.IGNORECASE)
+        if match:
+            season_ref = norm(match.group(1))
+            return {
+                "sunday_num": "",
+                "season_ref": season_ref.strip(),
+            }
+    
+    return {"sunday_num": "", "season_ref": ""}
+
+
+def enrich_event_metadata(event: dict[str, Any], selected: date) -> dict[str, Any]:
+    """Adiciona metadados derivados úteis para busca."""
+    title = event.get("titulo", "")
+    season = event.get("tempo", "")
+    
+    enriched = {
+        **event,
+        "title_terms": title_terms(title),
+        "sunday_info": extract_sunday_info(title),
+        "season_norm": norm(season),
+        "is_special_date": any(
+            kw in norm(title) 
+            for kw in ["natal", "páscoa", "pascoa", "pentecostes", "epifania", "cinzas"]
+        ),
+        "selected_date": selected,
+        "selected_day_str": selected.strftime("%d/%m"),
+    }
+    return enriched
+
+
+def title_terms(title: str) -> list[str]:
+    """Extrai termos significativos do título."""
+    ignored = {
+        "de", "da", "do", "das", "dos", "e", "o", "a", "os", "as",
+        "domingo", "nosso", "senhor", "proprio", "próprio", "apos",
+        "após", "pentecostes", "tempo", "comum", "quarta", "sexta",
+    }
+    terms = re.findall(r"[A-Za-zÀ-ÿ0-9]+", norm(title))
+    return [term for term in terms if len(term) >= 4 and term not in ignored]
+
+# ============================================================================
+# CACHE E CARREGAMENTO DE DADOS
+# ============================================================================
 
 @st.cache_data(show_spinner=False)
 def load_local_pericopes() -> dict[str, Any]:
+    """Carrega dados locais de pericopes.json."""
     if not DATA_PATH.exists():
         return {}
     try:
         return json.loads(DATA_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.error(f"Erro ao carregar pericopes.json: {e}")
         return {}
 
 
 def normalize_local_entry(key: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """Normaliza entrada local para formato padrão."""
     title = entry.get("titulo") or entry.get("dia_liturgico") or "Data liturgica"
     return {
         "titulo": title,
@@ -313,70 +423,107 @@ def normalize_local_entry(key: str, entry: dict[str, Any]) -> dict[str, Any]:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_ielb_calendar() -> dict[str, dict[str, Any]]:
+    """Carrega calendário IELB com parser melhorado."""
+    logger.info("Carregando calendário IELB...")
     html_text = fetch_text(IELB_TEMPO_IGREJA)
     events: dict[str, dict[str, Any]] = {
         key: {**value, "tempo": liturgical_season(value.get("titulo", ""))}
         for key, value in FALLBACK_DATAS.items()
     }
 
-    if html_text:
-        text = clean_text(html_text)
-        lines = [line.strip(" -\t") for line in text.splitlines() if line.strip()]
+    if not html_text:
+        logger.warning("Não foi possível buscar HTML de IELB")
+        return events
 
-        for idx, line in enumerate(lines):
-            lit_date = None
-            title = ""
+    text = clean_text(html_text)
+    lines = [line.strip(" -\t") for line in text.splitlines() if line.strip()]
+    logger.info(f"Linhas extraídas: {len(lines)}")
 
-            if line.lower().startswith("dia "):
-                lit_date = parse_pt_date(line)
-                if lit_date:
-                    for candidate in lines[idx + 1 : idx + 7]:
-                        if not candidate.lower().startswith("trienal") and not looks_like_reading(candidate):
-                            title = candidate
-                            break
-            elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", line):
-                lit_date = parse_pt_date(line)
-                if lit_date:
-                    for candidate in reversed(lines[max(0, idx - 6) : idx]):
-                        if not candidate.lower().startswith("selecione") and len(candidate) > 3:
-                            title = candidate
-                            break
+    i = 0
+    parsed_count = 0
+    
+    while i < len(lines):
+        line = lines[i]
+        lit_date = None
+        title = ""
+        context_start = i
+        context_end = i
 
-            if not lit_date or not title:
-                continue
+        # Detecção de data
+        if line.lower().startswith("dia "):
+            lit_date = parse_pt_date(line)
+            context_start = i + 1
+            context_end = min(i + 12, len(lines))
+        elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", line):
+            lit_date = parse_pt_date(line)
+            context_start = max(0, i - 8)
+            context_end = min(i + 8, len(lines))
+        else:
+            i += 1
+            continue
 
-            readings: list[str] = []
-            serie = ""
-            for candidate in lines[idx + 1 : idx + 16]:
-                if candidate.lower().startswith("dia ") or re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", candidate):
+        if not lit_date:
+            i += 1
+            continue
+
+        # Busca título no contexto
+        for candidate in lines[context_start:context_end]:
+            candidate_lower = candidate.lower()
+            if not any(candidate_lower.startswith(prefix) 
+                      for prefix in ["trienal", "dia ", "selecione", "próximo"]):
+                if not looks_like_reading(candidate) and len(candidate) > 5:
+                    title = candidate
                     break
-                if candidate.lower().startswith("trienal"):
-                    serie = candidate
-                elif looks_like_reading(candidate):
-                    readings.append(candidate)
 
-            key = lit_date.isoformat()
-            current = events.get(key, {})
-            events[key] = {
-                "titulo": title,
-                "data": key,
-                "cor": current.get("cor") or infer_color(title),
-                "tempo": liturgical_season(title),
-                "serie": serie or current.get("serie", ""),
-                "leituras": readings or current.get("leituras", []),
-                "fonte": "IELB - Tempo da Igreja",
-                "url": IELB_TEMPO_IGREJA,
-            }
+        if not title:
+            i += 1
+            continue
 
-    for key, value in load_local_pericopes().items():
+        # Captura leituras
+        readings: list[str] = []
+        serie = ""
+        for candidate in lines[context_end:min(context_end + 20, len(lines))]:
+            candidate_lower = candidate.lower()
+            if candidate_lower.startswith("dia ") or re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", candidate):
+                break
+            if candidate_lower.startswith("trienal"):
+                serie = candidate
+            elif looks_like_reading(candidate):
+                readings.append(candidate)
+
+        key = lit_date.isoformat()
+        current = events.get(key, {})
+        events[key] = {
+            "titulo": title,
+            "data": key,
+            "cor": current.get("cor") or infer_color(title),
+            "tempo": liturgical_season(title),
+            "serie": serie or current.get("serie", ""),
+            "leituras": readings or current.get("leituras", []),
+            "fonte": "IELB - Tempo da Igreja",
+            "url": IELB_TEMPO_IGREJA,
+        }
+        parsed_count += 1
+        i += 1
+
+    logger.info(f"Eventos parseados de IELB: {parsed_count}")
+
+    # Sobrescreve com dados locais
+    local_data = load_local_pericopes()
+    local_added = 0
+    for key, value in local_data.items():
         if isinstance(value, dict):
             events[key] = {**events.get(key, {}), **normalize_local_entry(key, value)}
-
+            local_added += 1
+    
+    logger.info(f"Entradas locais adicionadas: {local_added}")
     return dict(sorted(events.items()))
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_blog_posts() -> list[dict[str, str]]:
+    """Carrega posts do blog."""
+    logger.info("Carregando posts do blog...")
     posts: list[BlogPost] = []
     posts.extend(parse_rss_posts(fetch_text(BLOG_FEED)))
     posts.extend(parse_archive_posts(fetch_text(BLOG_ARCHIVE_2023)))
@@ -398,16 +545,19 @@ def load_blog_posts() -> list[dict[str, str]]:
                 "tempo": liturgical_season(title),
             }
         )
+    logger.info(f"Posts únicos carregados: {len(unique)}")
     return unique
 
 
 def parse_rss_posts(xml_text: str) -> list[BlogPost]:
+    """Parse de posts do feed RSS."""
     if not xml_text.strip():
         return []
     posts: list[BlogPost] = []
     try:
         root = ET.fromstring(xml_text)
-    except ET.ParseError:
+    except ET.ParseError as e:
+        logger.error(f"Erro ao parsear XML: {e}")
         return posts
 
     for item in root.findall(".//item"):
@@ -423,6 +573,7 @@ def parse_rss_posts(xml_text: str) -> list[BlogPost]:
 
 
 def parse_archive_posts(page_html: str) -> list[BlogPost]:
+    """Parse de posts do arquivo do blog."""
     if not page_html.strip():
         return []
 
@@ -448,11 +599,13 @@ def parse_archive_posts(page_html: str) -> list[BlogPost]:
         if title.lower() in {"image", "nenhum comentario", "postar no blog"}:
             continue
         posts.append(BlogPost(title=title, link=html.unescape(link)))
+    
     return posts
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_post_comment(url: str) -> str:
+    """Carrega comentário completo do post."""
     page = fetch_text(url)
     if not page:
         return ""
@@ -473,6 +626,7 @@ def load_post_comment(url: str) -> str:
 
 
 def remove_blog_noise(text: str) -> str:
+    """Remove ruído comum em posts do blog."""
     lines = []
     for line in text.splitlines():
         clean = line.strip()
@@ -485,7 +639,24 @@ def remove_blog_noise(text: str) -> str:
     return "\n\n".join(lines)
 
 
+# ============================================================================
+# BUSCA E MATCHING DE POSTS (VERSÃO MELHORADA)
+# ============================================================================
+
+def is_generic_church_year_post(post: dict[str, str]) -> bool:
+    """Detecta posts genéricos sobre o Ano da Igreja."""
+    title = norm(post.get("title", ""))
+    generic_titles = {
+        "o ano da igreja crista",
+        "ano da igreja crista",
+        "o ano da igreja",
+        "ano da igreja",
+    }
+    return title in generic_titles
+
+
 def keywords_for_event(event: dict[str, Any], selected: date) -> list[str]:
+    """Gera keywords para busca baseado no evento."""
     explicit = event.get("blog_keywords") or []
     title = event.get("titulo", "")
     words = [title, selected.strftime("%d/%m"), selected.strftime("%d/%m/%Y")]
@@ -498,106 +669,128 @@ def keywords_for_event(event: dict[str, Any], selected: date) -> list[str]:
     return [str(k) for k in [*explicit, *words] if str(k).strip()]
 
 
-def title_terms(title: str) -> list[str]:
-    ignored = {
-        "de",
-        "da",
-        "do",
-        "das",
-        "dos",
-        "e",
-        "o",
-        "a",
-        "os",
-        "as",
-        "domingo",
-        "nosso",
-        "senhor",
-        "proprio",
-        "proprio",
-        "apos",
-        "pentecostes",
-        "tempo",
-    }
-    terms = re.findall(r"[A-Za-zÀ-ÿ0-9]+", norm(title))
-    return [term for term in terms if len(term) >= 4 and term not in ignored]
-
-
-def is_generic_church_year_post(post: dict[str, str]) -> bool:
-    title = norm(post.get("title", ""))
-    generic_titles = {
-        "o ano da igreja crista",
-        "ano da igreja crista",
-        "o ano da igreja",
-        "ano da igreja",
-    }
-    return title in generic_titles
-
-
-def search_posts(posts: list[dict[str, str]], event: dict[str, Any], selected: date, limit: int = 5) -> list[dict[str, str]]:
+def search_posts(
+    posts: list[dict[str, str]], 
+    event: dict[str, Any], 
+    selected: date, 
+    limit: int = 5,
+    debug: bool = False
+) -> list[dict[str, str]]:
+    """
+    Busca posts do blog com priorização inteligente.
+    
+    Prioridades:
+    1. Título exato ou muito similar (50 pontos)
+    2. Mesmo domingo + mesma temporada (40 pontos)
+    3. Mesma temporada (20+ pontos)
+    4. Keywords genéricas (2-5 pontos)
+    """
     title = event.get("titulo", "")
     season = event.get("tempo") or liturgical_season(title)
+    sunday_info = extract_sunday_info(title)
+    
     keywords = [norm(k) for k in keywords_for_event(event, selected) if len(norm(k)) >= 3]
     title_norm = norm(title)
     season_norm = norm(season)
     strong_terms = title_terms(title)
     selected_day = selected.strftime("%d/%m")
 
+    if debug:
+        logger.info(f"Buscando posts para: {title}")
+        logger.info(f"  Temporada: {season}")
+        logger.info(f"  Sunday info: {sunday_info}")
+        logger.info(f"  Strong terms: {strong_terms}")
+
     scored: list[tuple[int, dict[str, str]]] = []
+
     for post in posts:
         post_title = norm(post.get("title", ""))
         haystack = norm(f"{post.get('title', '')} {post.get('summary', '')}")
         score = 0
-        strong_hits = 0
+        match_reasons = []
 
+        # Filtro: posts genéricos
         if is_generic_church_year_post(post) and "ano da igreja" not in title_norm:
             continue
 
+        # PRIORIDADE 1: Título exato ou muito similar
         if title_norm and (title_norm in post_title or post_title in title_norm):
-            score += 30
-            strong_hits += 2
+            score += 50
+            match_reasons.append("título exato")
 
+        # PRIORIDADE 2: Mesmo domingo + mesma temporada
+        if sunday_info["sunday_num"] and sunday_info["sunday_num"] in post_title:
+            score += 15
+            match_reasons.append(f"domingo {sunday_info['sunday_num']}")
+            
+            if season and season != "Tempo Comum" and season_norm in haystack:
+                score += 25
+                match_reasons.append(f"+ {season}")
+
+        # PRIORIDADE 3: Temporada específica
+        if season and season != "Tempo Comum":
+            if season_norm in post_title:
+                score += 20
+                match_reasons.append(f"temporada {season}")
+            elif season_norm in haystack:
+                score += 12
+                match_reasons.append(f"temporada {season} (summary)")
+
+        # PRIORIDADE 4: Strong terms do título
         for term in strong_terms:
             if term in post_title:
                 score += 7
-                strong_hits += 1
+                match_reasons.append(f"termo forte: {term}")
             elif term in haystack:
                 score += 3
-                strong_hits += 1
 
-        if post.get("tempo") == season and season != "Tempo Comum":
-            score += 3
-        if season_norm and season != "Tempo Comum" and season_norm in haystack:
-            score += 2
-
+        # PRIORIDADE 5: Keywords gerais
         for keyword in keywords:
             if keyword in post_title:
                 score += 4
+                match_reasons.append(f"keyword: {keyword}")
             elif keyword in haystack:
                 score += 2
 
+        # PRIORIDADE 6: Data selecionada
         if selected_day in haystack:
             score += 6
-            strong_hits += 1
+            match_reasons.append(f"data: {selected_day}")
 
-        if score >= 10 and strong_hits:
+        if score >= 12:
             scored.append((score, post))
+            if debug:
+                logger.info(f"  ✓ {post_title[:50]}... → score {score}: {', '.join(match_reasons)}")
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    return [post for _, post in scored[:limit]]
+    result = [post for _, post in scored[:limit]]
+    
+    if debug:
+        logger.info(f"Posts encontrados: {len(result)}")
+    
+    return result
 
+# ============================================================================
+# FUNÇÕES AUXILIARES DE NAVEGAÇÃO
+# ============================================================================
 
 def events_for_year(events: dict[str, dict[str, Any]], year: int) -> dict[str, dict[str, Any]]:
+    """Filtra eventos por ano."""
     return {key: value for key, value in events.items() if key.startswith(str(year))}
 
 
 def nearest_event(events: dict[str, dict[str, Any]], target: date) -> str:
+    """Encontra o evento mais próximo de uma data."""
     if not events:
         return target.isoformat()
     return min(events.keys(), key=lambda key: abs((date.fromisoformat(key) - target).days))
 
+# ============================================================================
+# RENDERIZAÇÃO DE UI
+# ============================================================================
 
 def render_event(event: dict[str, Any], selected: date) -> None:
+    """Renderiza informações do evento litúrgico."""
     title = event.get("titulo", "Data liturgica")
     season = event.get("tempo") or liturgical_season(title)
 
@@ -636,9 +829,15 @@ def render_event(event: dict[str, Any], selected: date) -> None:
         st.markdown(f'<div class="source-line">Fonte: {html.escape(source)}</div>', unsafe_allow_html=True)
 
 
-def render_blog_comment(posts: list[dict[str, str]], event: dict[str, Any], selected: date) -> None:
+def render_blog_comment(
+    posts: list[dict[str, str]], 
+    event: dict[str, Any], 
+    selected: date,
+    debug: bool = False
+) -> None:
+    """Renderiza comentário do blog com busca inteligente."""
     season = event.get("tempo") or liturgical_season(event.get("titulo", ""))
-    found = search_posts(posts, event, selected)
+    found = search_posts(posts, event, selected, debug=debug)
     generic_posts = [post for post in posts if is_generic_church_year_post(post)]
 
     st.markdown("### Comentario do Teologia Luterana")
@@ -677,6 +876,7 @@ def render_blog_comment(posts: list[dict[str, str]], event: dict[str, Any], sele
 
 
 def render_sidebar(events: dict[str, dict[str, Any]], posts: list[dict[str, str]]) -> None:
+    """Renderiza sidebar com informações."""
     with st.sidebar:
         st.header("Fontes")
         st.markdown(f"[Tempo da Igreja - IELB]({IELB_TEMPO_IGREJA})")
@@ -688,7 +888,15 @@ def render_sidebar(events: dict[str, dict[str, Any]], posts: list[dict[str, str]
         if st.button("Atualizar dados agora"):
             st.cache_data.clear()
             st.rerun()
+        
+        # Debug mode toggle
+        st.divider()
+        debug_mode = st.checkbox("Modo debug (logs)", value=False)
 
+
+# ============================================================================
+# FUNÇÃO PRINCIPAL
+# ============================================================================
 
 def main() -> None:
     apply_style()
@@ -696,6 +904,9 @@ def main() -> None:
     st.title("Calendario Liturgico Luterano")
     st.caption("Escolha uma data liturgica; os comentarios do blog sao encaixados pelo mesmo tempo liturgico.")
 
+    # Check debug mode
+    debug_mode = False
+    
     with st.spinner("Carregando calendario e blog..."):
         events = load_ielb_calendar()
         posts = load_blog_posts()
@@ -745,7 +956,7 @@ def main() -> None:
         }
 
     render_event(event, selected)
-    render_blog_comment(posts, event, selected)
+    render_blog_comment(posts, event, selected, debug=debug_mode)
 
     with st.expander("Adicionar ou corrigir datas manualmente"):
         st.write("Crie um arquivo pericopes.json na mesma pasta do app para complementar ou corrigir os dados.")
