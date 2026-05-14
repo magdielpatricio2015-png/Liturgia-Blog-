@@ -488,8 +488,7 @@ def remove_blog_noise(text: str) -> str:
 def keywords_for_event(event: dict[str, Any], selected: date) -> list[str]:
     explicit = event.get("blog_keywords") or []
     title = event.get("titulo", "")
-    season = event.get("tempo") or liturgical_season(title)
-    words = [title, season, selected.strftime("%d/%m"), selected.strftime("%d/%m/%Y")]
+    words = [title, selected.strftime("%d/%m"), selected.strftime("%d/%m/%Y")]
 
     for part in re.split(r"[-()]", title):
         part = part.strip()
@@ -499,36 +498,89 @@ def keywords_for_event(event: dict[str, Any], selected: date) -> list[str]:
     return [str(k) for k in [*explicit, *words] if str(k).strip()]
 
 
+def title_terms(title: str) -> list[str]:
+    ignored = {
+        "de",
+        "da",
+        "do",
+        "das",
+        "dos",
+        "e",
+        "o",
+        "a",
+        "os",
+        "as",
+        "domingo",
+        "nosso",
+        "senhor",
+        "proprio",
+        "proprio",
+        "apos",
+        "pentecostes",
+        "tempo",
+    }
+    terms = re.findall(r"[A-Za-zÀ-ÿ0-9]+", norm(title))
+    return [term for term in terms if len(term) >= 4 and term not in ignored]
+
+
+def is_generic_church_year_post(post: dict[str, str]) -> bool:
+    title = norm(post.get("title", ""))
+    generic_titles = {
+        "o ano da igreja crista",
+        "ano da igreja crista",
+        "o ano da igreja",
+        "ano da igreja",
+    }
+    return title in generic_titles
+
+
 def search_posts(posts: list[dict[str, str]], event: dict[str, Any], selected: date, limit: int = 5) -> list[dict[str, str]]:
     title = event.get("titulo", "")
     season = event.get("tempo") or liturgical_season(title)
     keywords = [norm(k) for k in keywords_for_event(event, selected) if len(norm(k)) >= 3]
     title_norm = norm(title)
     season_norm = norm(season)
+    strong_terms = title_terms(title)
+    selected_day = selected.strftime("%d/%m")
 
     scored: list[tuple[int, dict[str, str]]] = []
     for post in posts:
         post_title = norm(post.get("title", ""))
         haystack = norm(f"{post.get('title', '')} {post.get('summary', '')}")
         score = 0
+        strong_hits = 0
+
+        if is_generic_church_year_post(post) and "ano da igreja" not in title_norm:
+            continue
 
         if title_norm and (title_norm in post_title or post_title in title_norm):
-            score += 18
-        if season_norm and season_norm in haystack:
-            score += 8
-        if post.get("tempo") == season:
-            score += 6
+            score += 30
+            strong_hits += 2
+
+        for term in strong_terms:
+            if term in post_title:
+                score += 7
+                strong_hits += 1
+            elif term in haystack:
+                score += 3
+                strong_hits += 1
+
+        if post.get("tempo") == season and season != "Tempo Comum":
+            score += 3
+        if season_norm and season != "Tempo Comum" and season_norm in haystack:
+            score += 2
 
         for keyword in keywords:
             if keyword in post_title:
-                score += 5
+                score += 4
             elif keyword in haystack:
                 score += 2
 
-        if selected.strftime("%d/%m") in haystack:
-            score += 3
+        if selected_day in haystack:
+            score += 6
+            strong_hits += 1
 
-        if score:
+        if score >= 10 and strong_hits:
             scored.append((score, post))
 
     scored.sort(key=lambda item: item[0], reverse=True)
@@ -587,12 +639,20 @@ def render_event(event: dict[str, Any], selected: date) -> None:
 def render_blog_comment(posts: list[dict[str, str]], event: dict[str, Any], selected: date) -> None:
     season = event.get("tempo") or liturgical_season(event.get("titulo", ""))
     found = search_posts(posts, event, selected)
+    generic_posts = [post for post in posts if is_generic_church_year_post(post)]
 
     st.markdown("### Comentario do Teologia Luterana")
     st.markdown(f'<span class="pill">{html.escape(season)}</span>', unsafe_allow_html=True)
 
     if not found:
-        st.info("Nenhum comentario do blog foi encontrado para este tempo liturgico.")
+        st.info("Nao encontrei um comentario especifico do blog para esta data liturgica.")
+        if generic_posts:
+            post = generic_posts[0]
+            st.markdown('<div class="comment-card">', unsafe_allow_html=True)
+            st.markdown("**Material geral de apoio**")
+            st.markdown(f"[{post['title']}]({post['link']})")
+            st.caption("Este texto explica o Ano da Igreja Crista, mas nao e o comentario especifico da data selecionada.")
+            st.markdown("</div>", unsafe_allow_html=True)
         return
 
     main_post = found[0]
