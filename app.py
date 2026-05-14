@@ -2,12 +2,15 @@
 Calendario Liturgico Luterano
 =============================
 
-App Streamlit que consulta:
-- Blog Teologia e Liturgia Luterana, especialmente o arquivo de 2023.
-- Pagina "Tempo da Igreja" da IELB.
+Consulta a pagina "Tempo da Igreja" da IELB e relaciona a data liturgica
+selecionada com comentarios do blog Teologia e Liturgia Luterana.
 
-O app evita depender obrigatoriamente de feedparser/bs4. Usa apenas biblioteca
-padrao, com requests como opcional.
+Melhorias desta versao:
+- Layout mais limpo e focado na data liturgica.
+- Classificacao do tempo liturgico.
+- Busca do blog priorizando o mesmo tempo liturgico e o mesmo domingo/festa.
+- Comentario do blog exibido abaixo das pericopes, no fluxo principal.
+- Sem dependencia obrigatoria de feedparser ou BeautifulSoup.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 
@@ -36,11 +39,11 @@ except Exception:
 
 
 BLOG_ARCHIVE_2023 = "https://teologiaeliturgialuterana.blogspot.com/2023/"
-BLOG_FEED = "https://teologiaeliturgialuterana.blogspot.com/feeds/posts/default?alt=rss&max-results=100"
+BLOG_FEED = "https://teologiaeliturgialuterana.blogspot.com/feeds/posts/default?alt=rss&max-results=150"
 IELB_TEMPO_IGREJA = "https://www.ielb.org.br/tempo-da-igreja"
 
 DATA_PATH = Path(__file__).parent / "pericopes.json"
-HEADERS = {"User-Agent": "CalendarioLiturgicoLuterano/1.0"}
+HEADERS = {"User-Agent": "CalendarioLiturgicoLuterano/1.1"}
 
 MESES = {
     "janeiro": 1,
@@ -58,23 +61,26 @@ MESES = {
     "dezembro": 12,
 }
 
+TEMPOS_LITURGICOS = [
+    ("Advento", ["advento"]),
+    ("Natal", ["natal", "natividade"]),
+    ("Epifania", ["epifania", "batismo de nosso senhor", "transfiguracao", "transfiguração"]),
+    ("Quaresma", ["quaresma", "cinzas", "ramos", "paixao", "paixão"]),
+    ("Pascoa", ["pascoa", "páscoa", "ressurreicao", "ressurreição", "ascensao", "ascensão"]),
+    ("Pentecostes", ["pentecostes", "trindade"]),
+    ("Tempo Comum", ["proprio", "próprio", "apos pentecostes", "após pentecostes"]),
+    ("Festas e datas especiais", ["reforma", "todos os santos", "confissao", "confissão"]),
+]
+
 CORES_POR_TEMPO = {
-    "advento": "Azul ou roxo",
-    "natal": "Branco",
-    "epifania": "Branco",
-    "cinzas": "Roxo",
-    "quaresma": "Roxo",
-    "ramos": "Vermelho ou roxo",
-    "paixao": "Preto",
-    "paixão": "Preto",
-    "pascoa": "Branco",
-    "páscoa": "Branco",
-    "ascensao": "Branco",
-    "ascensão": "Branco",
-    "pentecostes": "Vermelho",
-    "trindade": "Branco",
-    "reforma": "Vermelho",
-    "todos os santos": "Branco",
+    "Advento": "Azul ou roxo",
+    "Natal": "Branco",
+    "Epifania": "Branco",
+    "Quaresma": "Roxo",
+    "Pascoa": "Branco",
+    "Pentecostes": "Vermelho",
+    "Tempo Comum": "Verde",
+    "Festas e datas especiais": "A confirmar",
 }
 
 FALLBACK_DATAS = {
@@ -123,7 +129,7 @@ class BlogPost:
 
 st.set_page_config(
     page_title="Calendario Liturgico Luterano",
-    page_icon="calendar",
+    page_icon="📖",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -133,34 +139,60 @@ def apply_style() -> None:
     st.markdown(
         """
         <style>
-        .block-container { max-width: 1180px; padding-top: 1.4rem; }
-        h1 { font-size: 1.7rem !important; }
-        h2 { font-size: 1.25rem !important; }
-        h3 { font-size: 1.08rem !important; }
+        [data-testid="stAppViewContainer"] { background: #f7f5f0; }
+        .block-container { max-width: 1180px; padding-top: 1.35rem; }
+        h1 { font-size: 1.7rem !important; letter-spacing: 0 !important; margin-bottom: .15rem !important; }
+        h2 { font-size: 1.22rem !important; letter-spacing: 0 !important; }
+        h3 { font-size: 1.04rem !important; letter-spacing: 0 !important; }
+        section[data-testid="stSidebar"] { background: #2f3a33; }
+        section[data-testid="stSidebar"] * { color: #f7f5f0 !important; }
         div[data-testid="stMetric"] {
-            border: 1px solid #e3e7ee;
+            border: 1px solid #ddd6c8;
             border-radius: 8px;
             padding: .55rem .7rem;
-            background: #ffffff;
+            background: #fffdf8;
         }
+        .hero {
+            border: 1px solid #ddd6c8;
+            border-radius: 8px;
+            background: #fffdf8;
+            padding: 1rem 1.05rem;
+            margin: .35rem 0 1rem 0;
+        }
+        .hero-title { font-size: 1.35rem; font-weight: 750; color: #243027; margin-bottom: .35rem; }
+        .hero-sub { color: #5d665f; font-size: .94rem; }
         .lit-card {
-            border: 1px solid #e3e7ee;
+            border: 1px solid #ddd6c8;
             border-radius: 8px;
             padding: .85rem 1rem;
-            background: #ffffff;
+            background: #fffdf8;
             margin: .45rem 0;
         }
-        .muted { color: #64748b; font-size: .9rem; }
+        .comment-card {
+            border: 1px solid #c7d2c5;
+            border-left: 4px solid #43634c;
+            border-radius: 8px;
+            padding: .95rem 1rem;
+            background: #fbfff9;
+            margin: .55rem 0 .8rem 0;
+        }
+        .reading {
+            border-bottom: 1px solid #ece5d8;
+            padding: .42rem 0;
+            font-size: .98rem;
+        }
+        .reading:last-child { border-bottom: 0; }
         .pill {
             display: inline-block;
             border-radius: 999px;
-            padding: .15rem .55rem;
-            background: #eef2ff;
-            color: #3730a3;
+            padding: .14rem .55rem;
+            background: #e8eee7;
+            color: #2f4b38;
             font-weight: 650;
             font-size: .78rem;
-            margin: .1rem .15rem .1rem 0;
+            margin: .08rem .12rem .08rem 0;
         }
+        .source-line { color: #69736c; font-size: .88rem; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -211,112 +243,48 @@ def fetch_text(url: str) -> str:
 
 def parse_pt_date(text: str) -> Optional[date]:
     text = html.unescape(text or "").strip()
+    match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", text)
+    if match:
+        return date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
 
-    m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", text)
-    if m:
-        return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-
-    m = re.search(
-        r"(\d{1,2})\s+de\s+([A-Za-zÀ-ÿ]+)\s+de\s+(\d{4})",
-        text,
-        flags=re.I,
-    )
-    if m:
-        mes = MESES.get(norm(m.group(2)))
+    match = re.search(r"(\d{1,2})\s+de\s+([A-Za-zÀ-ÿ]+)\s+de\s+(\d{4})", text, flags=re.I)
+    if match:
+        mes = MESES.get(norm(match.group(2)))
         if mes:
-            return date(int(m.group(3)), mes, int(m.group(1)))
-
+            return date(int(match.group(3)), mes, int(match.group(1)))
     return None
+
+
+def liturgical_season(title: str) -> str:
+    title_norm = norm(title)
+    for season, needles in TEMPOS_LITURGICOS:
+        if any(norm(needle) in title_norm for needle in needles):
+            return season
+    return "Tempo Comum"
 
 
 def infer_color(title: str) -> str:
     title_norm = norm(title)
-    for key, color in CORES_POR_TEMPO.items():
-        if norm(key) in title_norm:
-            return color
-    if "proprio" in title_norm or "apos pentecostes" in title_norm:
-        return "Verde"
-    return "A confirmar"
+    if "sexta-feira santa" in title_norm or "paixao" in title_norm:
+        return "Preto"
+    season = liturgical_season(title)
+    return CORES_POR_TEMPO.get(season, "A confirmar")
 
 
 def looks_like_reading(line: str) -> bool:
     line = line.strip()
-    if not line or len(line) > 80:
+    if not line or len(line) > 90:
         return False
     if re.search(r"\b\d{1,3}[.,]\d", line):
         return True
-    biblical_books = [
+    books = [
         "Sl", "Salmo", "Is", "Isaias", "Isaías", "Rm", "Romanos", "Mt",
         "Mateus", "Mc", "Marcos", "Lc", "Lucas", "Jo", "Joao", "João",
-        "At", "Atos", "Ef", "Efesios", "Efésios", "Gn", "Genesis",
-        "Êx", "Ex", "Ap", "Apocalipse", "Hb", "Hebreus", "1 Co", "2 Co",
-        "1 Ts", "2 Ts", "1 Pe", "2 Pe", "Tg", "Tiago",
+        "At", "Atos", "Ef", "Efesios", "Efésios", "Gn", "Genesis", "Gênesis",
+        "Ex", "Êx", "Ap", "Apocalipse", "Hb", "Hebreus", "1 Co", "2 Co",
+        "1 Ts", "2 Ts", "1 Pe", "2 Pe", "Tg", "Tiago", "Fp", "Filipenses",
     ]
-    return any(line.startswith(book + " ") for book in biblical_books)
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_ielb_calendar() -> dict[str, dict[str, Any]]:
-    html_text = fetch_text(IELB_TEMPO_IGREJA)
-    events: dict[str, dict[str, Any]] = dict(FALLBACK_DATAS)
-
-    if not html_text:
-        return events
-
-    text = clean_text(html_text)
-    lines = [line.strip(" -\t") for line in text.splitlines() if line.strip()]
-
-    for idx, line in enumerate(lines):
-        lit_date = None
-        title = ""
-
-        if line.lower().startswith("dia "):
-            lit_date = parse_pt_date(line)
-            if lit_date:
-                for candidate in lines[idx + 1 : idx + 6]:
-                    if not candidate.lower().startswith("trienal") and not looks_like_reading(candidate):
-                        title = candidate
-                        break
-
-        elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", line):
-            lit_date = parse_pt_date(line)
-            if lit_date:
-                for candidate in reversed(lines[max(0, idx - 5) : idx]):
-                    if not candidate.lower().startswith("selecione") and len(candidate) > 3:
-                        title = candidate
-                        break
-
-        if not lit_date or not title:
-            continue
-
-        readings: list[str] = []
-        serie = ""
-        for candidate in lines[idx + 1 : idx + 14]:
-            if candidate.lower().startswith("dia ") or re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", candidate):
-                break
-            if candidate.lower().startswith("trienal"):
-                serie = candidate
-            elif looks_like_reading(candidate):
-                readings.append(candidate)
-
-        key = lit_date.isoformat()
-        current = events.get(key, {})
-        events[key] = {
-            "titulo": title,
-            "data": key,
-            "cor": current.get("cor") or infer_color(title),
-            "serie": serie or current.get("serie", ""),
-            "leituras": readings or current.get("leituras", []),
-            "fonte": "IELB - Tempo da Igreja",
-            "url": IELB_TEMPO_IGREJA,
-        }
-
-    local_data = load_local_pericopes()
-    for key, value in local_data.items():
-        if isinstance(value, dict):
-            events[key] = {**events.get(key, {}), **normalize_local_entry(key, value)}
-
-    return dict(sorted(events.items()))
+    return any(line.startswith(book + " ") for book in books)
 
 
 @st.cache_data(show_spinner=False)
@@ -330,15 +298,81 @@ def load_local_pericopes() -> dict[str, Any]:
 
 
 def normalize_local_entry(key: str, entry: dict[str, Any]) -> dict[str, Any]:
+    title = entry.get("titulo") or entry.get("dia_liturgico") or "Data liturgica"
     return {
-        "titulo": entry.get("titulo") or entry.get("dia_liturgico") or "Data liturgica",
+        "titulo": title,
         "data": key,
-        "cor": entry.get("cor", "A confirmar"),
+        "cor": entry.get("cor") or infer_color(title),
+        "tempo": entry.get("tempo") or liturgical_season(title),
         "serie": entry.get("serie", ""),
         "leituras": entry.get("leituras", []),
         "blog_keywords": entry.get("blog_keywords", []),
         "fonte": entry.get("fonte", "pericopes.json"),
     }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_ielb_calendar() -> dict[str, dict[str, Any]]:
+    html_text = fetch_text(IELB_TEMPO_IGREJA)
+    events: dict[str, dict[str, Any]] = {
+        key: {**value, "tempo": liturgical_season(value.get("titulo", ""))}
+        for key, value in FALLBACK_DATAS.items()
+    }
+
+    if html_text:
+        text = clean_text(html_text)
+        lines = [line.strip(" -\t") for line in text.splitlines() if line.strip()]
+
+        for idx, line in enumerate(lines):
+            lit_date = None
+            title = ""
+
+            if line.lower().startswith("dia "):
+                lit_date = parse_pt_date(line)
+                if lit_date:
+                    for candidate in lines[idx + 1 : idx + 7]:
+                        if not candidate.lower().startswith("trienal") and not looks_like_reading(candidate):
+                            title = candidate
+                            break
+            elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", line):
+                lit_date = parse_pt_date(line)
+                if lit_date:
+                    for candidate in reversed(lines[max(0, idx - 6) : idx]):
+                        if not candidate.lower().startswith("selecione") and len(candidate) > 3:
+                            title = candidate
+                            break
+
+            if not lit_date or not title:
+                continue
+
+            readings: list[str] = []
+            serie = ""
+            for candidate in lines[idx + 1 : idx + 16]:
+                if candidate.lower().startswith("dia ") or re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", candidate):
+                    break
+                if candidate.lower().startswith("trienal"):
+                    serie = candidate
+                elif looks_like_reading(candidate):
+                    readings.append(candidate)
+
+            key = lit_date.isoformat()
+            current = events.get(key, {})
+            events[key] = {
+                "titulo": title,
+                "data": key,
+                "cor": current.get("cor") or infer_color(title),
+                "tempo": liturgical_season(title),
+                "serie": serie or current.get("serie", ""),
+                "leituras": readings or current.get("leituras", []),
+                "fonte": "IELB - Tempo da Igreja",
+                "url": IELB_TEMPO_IGREJA,
+            }
+
+    for key, value in load_local_pericopes().items():
+        if isinstance(value, dict):
+            events[key] = {**events.get(key, {}), **normalize_local_entry(key, value)}
+
+    return dict(sorted(events.items()))
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -354,12 +388,14 @@ def load_blog_posts() -> list[dict[str, str]]:
         if not ident or ident in seen:
             continue
         seen.add(ident)
+        title = clean_text(post.title)
         unique.append(
             {
-                "title": post.title,
+                "title": title,
                 "link": post.link,
-                "summary": clean_text(post.summary)[:700],
+                "summary": clean_text(post.summary)[:900],
                 "published": post.published,
+                "tempo": liturgical_season(title),
             }
         )
     return unique
@@ -375,11 +411,14 @@ def parse_rss_posts(xml_text: str) -> list[BlogPost]:
         return posts
 
     for item in root.findall(".//item"):
-        title = item.findtext("title") or "Sem titulo"
-        link = item.findtext("link") or ""
-        summary = item.findtext("description") or ""
-        published = item.findtext("pubDate") or ""
-        posts.append(BlogPost(title=clean_text(title), link=link, summary=summary, published=published))
+        posts.append(
+            BlogPost(
+                title=clean_text(item.findtext("title") or "Sem titulo"),
+                link=item.findtext("link") or "",
+                summary=item.findtext("description") or "",
+                published=item.findtext("pubDate") or "",
+            )
+        )
     return posts
 
 
@@ -393,7 +432,6 @@ def parse_archive_posts(page_html: str) -> list[BlogPost]:
         r"<a[^>]+href=['\"]([^'\"]+)['\"][^>]*>(.*?)</a>.*?</h3>",
         flags=re.I | re.S,
     )
-
     for link, title_html in pattern.findall(page_html):
         title = clean_text(title_html)
         if title and "Image" not in title:
@@ -405,27 +443,53 @@ def parse_archive_posts(page_html: str) -> list[BlogPost]:
     anchor_pattern = re.compile(r"<a[^>]+href=['\"]([^'\"]+)['\"][^>]*>(.*?)</a>", flags=re.I | re.S)
     for link, title_html in anchor_pattern.findall(page_html):
         title = clean_text(title_html)
-        if not title or len(title) < 4:
-            continue
-        if "teologiaeliturgialuterana.blogspot.com" not in link:
+        if len(title) < 4 or "teologiaeliturgialuterana.blogspot.com" not in link:
             continue
         if title.lower() in {"image", "nenhum comentario", "postar no blog"}:
             continue
         posts.append(BlogPost(title=title, link=html.unescape(link)))
-
     return posts
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_post_comment(url: str) -> str:
+    page = fetch_text(url)
+    if not page:
+        return ""
+
+    candidates = [
+        r"<div[^>]+class=['\"][^'\"]*post-body[^'\"]*['\"][^>]*>(.*?)</div>\s*<div[^>]+class=['\"][^'\"]*post-footer",
+        r"<div[^>]+class=['\"][^'\"]*post-body[^'\"]*['\"][^>]*>(.*?)</div>",
+        r"<article[^>]*>(.*?)</article>",
+    ]
+    for pattern in candidates:
+        match = re.search(pattern, page, flags=re.I | re.S)
+        if match:
+            text = clean_text(match.group(1))
+            text = remove_blog_noise(text)
+            if len(text) > 80:
+                return text
+    return ""
+
+
+def remove_blog_noise(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        clean = line.strip()
+        if not clean:
+            continue
+        low = norm(clean)
+        if low.startswith(("postado por", "marcadores:", "compartilhar", "nenhum comentario")):
+            continue
+        lines.append(clean)
+    return "\n\n".join(lines)
 
 
 def keywords_for_event(event: dict[str, Any], selected: date) -> list[str]:
     explicit = event.get("blog_keywords") or []
     title = event.get("titulo", "")
-    readings = event.get("leituras", [])
-    words = [title, selected.strftime("%d/%m"), selected.strftime("%d/%m/%Y")]
-
-    for reading in readings:
-        book = re.split(r"\s+\d", reading, maxsplit=1)[0].strip()
-        if book:
-            words.append(book)
+    season = event.get("tempo") or liturgical_season(title)
+    words = [title, season, selected.strftime("%d/%m"), selected.strftime("%d/%m/%Y")]
 
     for part in re.split(r"[-()]", title):
         part = part.strip()
@@ -435,16 +499,35 @@ def keywords_for_event(event: dict[str, Any], selected: date) -> list[str]:
     return [str(k) for k in [*explicit, *words] if str(k).strip()]
 
 
-def search_posts(posts: list[dict[str, str]], keywords: list[str], limit: int = 8) -> list[dict[str, str]]:
-    scored: list[tuple[int, dict[str, str]]] = []
-    normalized_keywords = [norm(k) for k in keywords if len(norm(k)) >= 3]
+def search_posts(posts: list[dict[str, str]], event: dict[str, Any], selected: date, limit: int = 5) -> list[dict[str, str]]:
+    title = event.get("titulo", "")
+    season = event.get("tempo") or liturgical_season(title)
+    keywords = [norm(k) for k in keywords_for_event(event, selected) if len(norm(k)) >= 3]
+    title_norm = norm(title)
+    season_norm = norm(season)
 
+    scored: list[tuple[int, dict[str, str]]] = []
     for post in posts:
+        post_title = norm(post.get("title", ""))
         haystack = norm(f"{post.get('title', '')} {post.get('summary', '')}")
         score = 0
-        for keyword in normalized_keywords:
-            if keyword and keyword in haystack:
-                score += 3 if keyword in norm(post.get("title", "")) else 1
+
+        if title_norm and (title_norm in post_title or post_title in title_norm):
+            score += 18
+        if season_norm and season_norm in haystack:
+            score += 8
+        if post.get("tempo") == season:
+            score += 6
+
+        for keyword in keywords:
+            if keyword in post_title:
+                score += 5
+            elif keyword in haystack:
+                score += 2
+
+        if selected.strftime("%d/%m") in haystack:
+            score += 3
+
         if score:
             scored.append((score, post))
 
@@ -459,101 +542,133 @@ def events_for_year(events: dict[str, dict[str, Any]], year: int) -> dict[str, d
 def nearest_event(events: dict[str, dict[str, Any]], target: date) -> str:
     if not events:
         return target.isoformat()
-    keys = list(events.keys())
-    return min(keys, key=lambda key: abs((date.fromisoformat(key) - target).days))
+    return min(events.keys(), key=lambda key: abs((date.fromisoformat(key) - target).days))
 
 
 def render_event(event: dict[str, Any], selected: date) -> None:
-    st.subheader(event.get("titulo", "Data liturgica"))
+    title = event.get("titulo", "Data liturgica")
+    season = event.get("tempo") or liturgical_season(title)
+
+    st.markdown(
+        f"""
+        <div class="hero">
+            <div class="hero-title">{html.escape(title)}</div>
+            <div class="hero-sub">
+                {selected.strftime("%d/%m/%Y")} · {html.escape(season)} ·
+                Cor: {html.escape(event.get("cor", "A confirmar"))}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Data", selected.strftime("%d/%m/%Y"))
-    m2.metric("Cor liturgica", event.get("cor", "A confirmar"))
+    m1.metric("Tempo liturgico", season)
+    m2.metric("Cor", event.get("cor", "A confirmar"))
     m3.metric("Serie", event.get("serie") or "Nao informada")
 
-    st.markdown('<div class="lit-card">', unsafe_allow_html=True)
-    st.markdown(f"**Fonte:** {event.get('fonte', 'Nao informada')}")
-    if event.get("url"):
-        st.markdown(f"[Abrir fonte]({event['url']})")
-    st.markdown("</div>", unsafe_allow_html=True)
-
     readings = event.get("leituras") or []
+    st.markdown("### Textos do dia")
     if readings:
-        st.markdown("### Pericopes")
+        st.markdown('<div class="lit-card">', unsafe_allow_html=True)
         for reading in readings:
-            st.markdown(f"- {reading}")
+            st.markdown(f'<div class="reading">{html.escape(reading)}</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
     else:
-        st.info("Nao encontrei pericopes estruturadas para esta data. A pagina da fonte ainda pode ter recursos relacionados.")
+        st.info("Nao encontrei pericopes estruturadas para esta data. A fonte ainda pode ter informacoes relacionadas.")
+
+    source = event.get("fonte", "Nao informada")
+    if event.get("url"):
+        st.markdown(f'<div class="source-line">Fonte: <a href="{event["url"]}">{html.escape(source)}</a></div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="source-line">Fonte: {html.escape(source)}</div>', unsafe_allow_html=True)
 
 
-def render_blog(posts: list[dict[str, str]], keywords: list[str]) -> None:
-    st.markdown("### Comentarios e recursos do blog")
-    found = search_posts(posts, keywords)
+def render_blog_comment(posts: list[dict[str, str]], event: dict[str, Any], selected: date) -> None:
+    season = event.get("tempo") or liturgical_season(event.get("titulo", ""))
+    found = search_posts(posts, event, selected)
 
-    if keywords:
-        visible = " ".join(f'<span class="pill">{html.escape(k)}</span>' for k in keywords[:10])
-        st.markdown(visible, unsafe_allow_html=True)
+    st.markdown("### Comentario do Teologia Luterana")
+    st.markdown(f'<span class="pill">{html.escape(season)}</span>', unsafe_allow_html=True)
 
     if not found:
-        st.info("Nenhum comentario foi encontrado automaticamente para esta data.")
+        st.info("Nenhum comentario do blog foi encontrado para este tempo liturgico.")
         return
 
-    for post in found:
-        st.markdown('<div class="lit-card">', unsafe_allow_html=True)
-        st.markdown(f"**[{post['title']}]({post['link']})**")
-        if post.get("published"):
-            st.caption(post["published"])
-        if post.get("summary"):
-            st.write(post["summary"][:260] + ("..." if len(post["summary"]) > 260 else ""))
-        st.markdown("</div>", unsafe_allow_html=True)
+    main_post = found[0]
+    comment = load_post_comment(main_post.get("link", ""))
+    st.markdown('<div class="comment-card">', unsafe_allow_html=True)
+    st.markdown(f"**[{main_post['title']}]({main_post['link']})**")
+    if main_post.get("published"):
+        st.caption(main_post["published"])
+    if comment:
+        preview = comment[:1800].strip()
+        st.write(preview + ("..." if len(comment) > len(preview) else ""))
+    elif main_post.get("summary"):
+        st.write(main_post["summary"])
+    else:
+        st.write("Abra o link para ler o comentario completo.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if len(found) > 1:
+        with st.expander("Outros comentarios relacionados"):
+            for post in found[1:]:
+                st.markdown(f"- [{post['title']}]({post['link']})")
+
+
+def render_sidebar(events: dict[str, dict[str, Any]], posts: list[dict[str, str]]) -> None:
+    with st.sidebar:
+        st.header("Fontes")
+        st.markdown(f"[Tempo da Igreja - IELB]({IELB_TEMPO_IGREJA})")
+        st.markdown(f"[Blog Teologia Luterana 2023]({BLOG_ARCHIVE_2023})")
+        st.markdown(f"[Feed do blog]({BLOG_FEED})")
+        st.divider()
+        st.metric("Datas carregadas", len(events))
+        st.metric("Posts do blog", len(posts))
+        if st.button("Atualizar dados agora"):
+            st.cache_data.clear()
+            st.rerun()
 
 
 def main() -> None:
     apply_style()
 
     st.title("Calendario Liturgico Luterano")
-    st.caption("Datas liturgicas, pericopes e comentarios a partir da IELB e do blog Teologia e Liturgia Luterana.")
+    st.caption("Escolha uma data liturgica; os comentarios do blog sao encaixados pelo mesmo tempo liturgico.")
 
-    with st.sidebar:
-        st.header("Fontes")
-        st.markdown(f"[Tempo da Igreja - IELB]({IELB_TEMPO_IGREJA})")
-        st.markdown(f"[Blog - arquivo 2023]({BLOG_ARCHIVE_2023})")
-        st.markdown(f"[Feed do blog]({BLOG_FEED})")
-        if st.button("Atualizar dados agora"):
-            st.cache_data.clear()
-            st.rerun()
-
-    with st.spinner("Carregando calendario liturgico..."):
+    with st.spinner("Carregando calendario e blog..."):
         events = load_ielb_calendar()
         posts = load_blog_posts()
+
+    render_sidebar(events, posts)
 
     current_year = date.today().year
     years = sorted({date.fromisoformat(key).year for key in events.keys()})
     if current_year not in years:
-        years.append(current_year)
-        years = sorted(years)
+        years = sorted([*years, current_year])
 
-    c1, c2 = st.columns([0.35, 0.65])
-    with c1:
-        year = st.selectbox("Ano", years, index=years.index(current_year) if current_year in years else 0)
-    year_events = events_for_year(events, year)
+    controls = st.container()
+    with controls:
+        c1, c2 = st.columns([0.35, 0.65])
+        with c1:
+            year = st.selectbox("Ano", years, index=years.index(current_year) if current_year in years else 0)
+        year_events = events_for_year(events, year)
+        with c2:
+            mode = st.radio("Selecao", ["Datas liturgicas", "Data manual"], horizontal=True)
 
-    with c2:
-        mode = st.radio("Selecao", ["Datas liturgicas", "Data manual"], horizontal=True)
-
-    if mode == "Datas liturgicas" and year_events:
-        options = [
-            f"{date.fromisoformat(key).strftime('%d/%m/%Y')} - {value.get('titulo', 'Data liturgica')}"
-            for key, value in year_events.items()
-        ]
-        default_key = nearest_event(year_events, date.today())
-        default_index = list(year_events.keys()).index(default_key)
-        selected_label = st.selectbox("Data liturgica", options, index=default_index)
-        selected_key = list(year_events.keys())[options.index(selected_label)]
-        selected = date.fromisoformat(selected_key)
-    else:
-        selected = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
-        selected_key = selected.isoformat()
+        if mode == "Datas liturgicas" and year_events:
+            options = [
+                f"{date.fromisoformat(key).strftime('%d/%m/%Y')} - {value.get('titulo', 'Data liturgica')}"
+                for key, value in year_events.items()
+            ]
+            default_key = nearest_event(year_events, date.today())
+            default_index = list(year_events.keys()).index(default_key)
+            selected_label = st.selectbox("Data liturgica", options, index=default_index)
+            selected_key = list(year_events.keys())[options.index(selected_label)]
+            selected = date.fromisoformat(selected_key)
+        else:
+            selected = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
+            selected_key = selected.isoformat()
 
     event = events.get(selected_key)
     if not event:
@@ -562,35 +677,25 @@ def main() -> None:
             "titulo": "Data sem cadastro",
             "data": selected_key,
             "cor": "A confirmar",
+            "tempo": "Tempo Comum",
             "serie": "",
             "leituras": [],
             "fonte": "sem registro local",
-            "blog_keywords": [selected.strftime("%d/%m"), selected.strftime("%B")],
+            "blog_keywords": [selected.strftime("%d/%m")],
         }
 
-    left, right = st.columns([0.58, 0.42])
-    with left:
-        render_event(event, selected)
-    with right:
-        st.markdown("### Resumo das fontes")
-        st.metric("Datas carregadas", len(events))
-        st.metric("Posts do blog", len(posts))
-        st.caption("Os dados sao armazenados em cache por 1 hora para deixar o app mais rapido.")
-
-    keywords = keywords_for_event(event, selected)
-    render_blog(posts, keywords)
+    render_event(event, selected)
+    render_blog_comment(posts, event, selected)
 
     with st.expander("Adicionar ou corrigir datas manualmente"):
-        st.write(
-            "Voce pode criar um arquivo pericopes.json na mesma pasta do app. "
-            "Esses dados complementam ou sobrescrevem o que veio da internet."
-        )
+        st.write("Crie um arquivo pericopes.json na mesma pasta do app para complementar ou corrigir os dados.")
         st.code(
             """
 {
   "2026-01-06": {
     "dia_liturgico": "Epifania de Nosso Senhor",
     "cor": "Branco",
+    "tempo": "Epifania",
     "serie": "Trienal A",
     "leituras": [
       "Isaias 60.1-6",
